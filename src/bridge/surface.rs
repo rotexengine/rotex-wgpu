@@ -1,7 +1,6 @@
 use crate::error::{Error, ErrorKind};
 use rotex_types::{Extent2D, SurfaceDescriptor};
 
-use super::pipeline_cache;
 use super::{WgpuBridge, surface_not_attached_error};
 
 pub(super) fn attach_surface(
@@ -16,7 +15,7 @@ pub(super) fn attach_surface(
     let swapchain = surface.create_swapchain(&bridge.device, extent.width, extent.height)?;
     bridge.surface = Some(surface);
     bridge.swapchain = Some(swapchain);
-    pipeline_cache::invalidate_all(bridge);
+    bridge.rhi_pipeline_cache.clear();
     bridge.depth_target = None;
     Ok(())
 }
@@ -64,6 +63,6 @@ fn reconfigure_surface(bridge: &mut WgpuBridge, extent: Extent2D) -> Result<(), 
     let swapchain = surface.create_swapchain(&bridge.device, extent.width, extent.height)?;
     bridge.swapchain = Some(swapchain);
     bridge.depth_target = None;
-    pipeline_cache::invalidate_all(bridge);
+    bridge.rhi_pipeline_cache.clear();
     Ok(())
 }

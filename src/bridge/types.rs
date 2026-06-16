@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::collections::HashMap;
 
 use rotex_types::{
@@ -9,14 +10,14 @@ use rotex_types::{
 pub struct WgpuVertexLayout {
     pub array_stride: u64,
     pub attributes: Vec<wgpu::VertexAttribute>,
+    pub step_mode: wgpu::VertexStepMode,
 }
 
 impl WgpuVertexLayout {
     pub fn as_wgpu(&self) -> wgpu::VertexBufferLayout<'_> {
         wgpu::VertexBufferLayout {
             array_stride: self.array_stride,
-            // rotex_types does not model step mode; WGPU backend uses vertex-rate input.
-            step_mode: wgpu::VertexStepMode::Vertex,
+            step_mode: self.step_mode,
             attributes: &self.attributes,
         }
     }
@@ -55,9 +56,7 @@ impl WgpuMeshResource {
 
 pub struct WgpuTextureResource {
     pub texture: wgpu::Texture,
-    #[allow(dead_code)]
-    pub view: wgpu::TextureView,
-    pub bind_group: wgpu::BindGroup,
+    pub default_view: wgpu::TextureView,
     pub format: wgpu::TextureFormat,
     pub size: (u32, u32),
 }
@@ -75,11 +74,31 @@ pub struct MaterialPipelineKey {
     pub depth_enabled: bool,
 }
 
+pub struct WgpuComputePipelineResource {
+    pub descriptor: rotex_types::resource::ComputePipelineDescriptor,
+    pub pipeline: wgpu::ComputePipeline,
+    pub bind_group_layouts: Vec<wgpu::BindGroupLayout>,
+}
+
+pub struct WgpuGraphicsPipelineResource {
+    pub pipeline: wgpu::RenderPipeline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DepthTargetKey {
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Default)]
 pub struct ResourceStorage {
     pub meshes: HashMap<MeshId, WgpuMeshResource>,
     pub materials: HashMap<MaterialId, MaterialDescriptor>,
     pub textures: HashMap<TextureId, WgpuTextureResource>,
+    pub compute_pipelines: HashMap<rotex_types::ComputePipelineId, WgpuComputePipelineResource>,
+    pub buffers: HashMap<rotex_types::BufferId, crate::backend::wgpu::WgpuBuffer>,
+    pub bind_group_layouts: HashMap<rotex_types::BindGroupLayoutId, wgpu::BindGroupLayout>,
+    pub bind_groups: HashMap<rotex_types::BindGroupId, wgpu::BindGroup>,
 }
 
 pub fn map_vertex_format(format: VertexFormat) -> wgpu::VertexFormat {

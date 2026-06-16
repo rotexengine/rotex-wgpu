@@ -1,8 +1,7 @@
+#![allow(dead_code)]
 mod bindings;
 mod compute_pipeline_cache;
-mod frame_profiler;
 mod init;
-mod pipeline_cache;
 mod render;
 mod resources;
 mod shader_cache;
@@ -22,9 +21,8 @@ use rotex_types::{
     SurfaceDescriptor, TextureId, TextureReadback,
 };
 
-pub use self::frame_profiler::{FrameProfilerHook, FrameTimingSnapshot};
 use self::shader_cache::ShaderCacheKey;
-use self::types::{DepthTarget, DepthTargetKey, MaterialPipelineKey, ResourceStorage};
+use self::types::{DepthTarget, MaterialPipelineKey, ResourceStorage};
 
 pub struct WgpuBridge {
     pub(crate) instance: WgpuInstance,
@@ -32,16 +30,9 @@ pub struct WgpuBridge {
     pub(crate) surface: Option<WgpuSurface>,
     pub(crate) swapchain: Option<WgpuSwapchain>,
     pub(crate) resources: ResourceStorage,
-    pub(crate) next_mesh_id: u64,
-    pub(crate) next_material_id: u64,
-    pub(crate) next_texture_id: u64,
-    pub(crate) next_buffer_id: u64,
-    pub(crate) next_compute_pipeline_id: u64,
-    pub(crate) next_bind_group_layout_id: u64,
-    pub(crate) next_bind_group_id: u64,
-    pub(crate) pipeline_cache: HashMap<MaterialPipelineKey, types::WgpuGraphicsPipelineResource>,
+    pub(crate) depth_target: Option<DepthTarget>,
+    pub(crate) rhi_pipeline_cache: HashMap<MaterialPipelineKey, types::WgpuGraphicsPipelineResource>,
     pub(crate) shader_module_cache: HashMap<ShaderCacheKey, wgpu::ShaderModule>,
-    pub(crate) depth_targets: HashMap<DepthTargetKey, DepthTarget>,
     pub(crate) compute_bind_groups:
         HashMap<(ComputePipelineId, BufferId), Vec<(u32, wgpu::BindGroup)>>,
     pub(crate) recording_encoder: Option<wgpu::CommandEncoder>,
@@ -50,7 +41,7 @@ pub struct WgpuBridge {
     pub(crate) swapchain_format: Option<wgpu::TextureFormat>,
     pub(crate) current_frame_index: u32,
     pub(crate) active_pass: Option<render::ActiveGraphicsPass>,
-    pub(crate) frame_profiler_hook: Option<FrameProfilerHook>,
+    pub(crate) render_bundle: Option<wgpu::RenderBundle>,
     pub(crate) pending_acquire_skips: u32,
     pre_present_hook: Option<fn()>,
 }
@@ -80,10 +71,6 @@ impl WgpuBridge {
 
     pub fn execute(&mut self, commands: &[RhiCommand]) -> Result<(), Error> {
         render::execute(self, commands)
-    }
-
-    pub fn set_frame_profiler_hook(&mut self, hook: Option<FrameProfilerHook>) {
-        self.frame_profiler_hook = hook;
     }
 
     pub fn set_pre_present_hook(&mut self, hook: Option<fn()>) {
@@ -169,5 +156,9 @@ impl GpuBackend for WgpuBridge {
 
     fn destroy(self: Box<Self>) {
         WgpuBridge::destroy(*self);
+    }
+
+    fn invalidate_command_cache(&mut self) {
+        self.render_bundle = None;
     }
 }

@@ -1,9 +1,10 @@
 use crate::error::{Error, ErrorKind};
 use rotex_types::{
-    CreatedResources, MaterialDescriptor, MaterialId, MeshDescriptor, MeshId, ResourceBatchCreate,
-    ResourceBatchUpdate, ResourceCreateDescriptor, ResourceHandle, ResourceUpdateDescriptor,
-    TextureDescriptor, TextureFormat, TextureId, VertexBufferLayout, VertexFormat,
-    VertexStreamData,
+    BindGroupEntryDescriptor, BindGroupId, BindGroupLayoutId, BufferDescriptor, BufferId,
+    BufferUsage, BufferUsages, ComputePipelineId, CreatedResources, MaterialDescriptor, MaterialId,
+    MeshDescriptor, MeshId, ResourceBatchCreate, ResourceBatchUpdate, ResourceCreateDescriptor,
+    ResourceHandle, ResourceUpdateDescriptor, TextureDescriptor, TextureFormat, TextureId,
+    VertexBufferLayout, VertexFormat, VertexStreamData,
 };
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hasher};
@@ -21,39 +22,117 @@ pub(super) fn create_resources(
     let mut handles = Vec::with_capacity(descriptor.resources.len());
     for resource in descriptor.resources {
         match resource {
-            ResourceCreateDescriptor::Mesh(mesh) => {
-                let id = MeshId(bridge.next_mesh_id);
-                bridge.next_mesh_id += 1;
+            ResourceCreateDescriptor::Mesh { id, mesh } => {
+                let id = MeshId(id);
                 bridge
                     .resources
                     .meshes
                     .insert(id, create_wgpu_mesh(&bridge.device.raw, &mesh)?);
                 handles.push(ResourceHandle::Mesh(id));
             }
-            ResourceCreateDescriptor::Material(material) => {
+            ResourceCreateDescriptor::Material { id, material } => {
                 validate_material_descriptor(&material)?;
-                let id = MaterialId(bridge.next_material_id);
-                bridge.next_material_id += 1;
+                let id = MaterialId(id);
                 bridge.resources.materials.insert(id, material);
                 handles.push(ResourceHandle::Material(id));
             }
-            ResourceCreateDescriptor::Texture(texture) => {
-                let id = TextureId(bridge.next_texture_id);
-                bridge.next_texture_id += 1;
-                let gpu_texture = create_wgpu_texture(
-                    &bridge.device,
-                    texture,
-                    &bridge.texture_bind_group_layout,
-                    &bridge.texture_sampler,
-                )?;
-                bridge.resources.textures.insert(id, gpu_texture);
-                handles.push(ResourceHandle::Texture(id));
+                ResourceCreateDescriptor::Texture { id, texture } => {
+                    let id = TextureId(id);
+                    let gpu_texture = create_wgpu_texture(
+                        &bridge.device,
+                        texture,
+                    )?;
+                    bridge.resources.textures.insert(id, gpu_texture);
+                    handles.push(ResourceHandle::Texture(id));
+                }
+                ResourceCreateDescriptor::Buffer { id, buffer: buf } => {
+                    let id = BufferId(id);
+                    let usage = map_wgpu_buffer_usage(&buf);
+                    let size = buf.size.max(1);
+                    let buffer = bridge.device.raw.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("rotex-buffer"),
+                        size,
+                        usage,
+                        mapped_at_creation: true,
+                    });
+                    if let Some(data) = &buf.initial_data {
+                        let len = data.len().min(size as usize);
+                        let mut mapped = buffer.slice(0..len as u64).get_mapped_range_mut();
+                        mapped.copy_from_slice(&data[..len]);
+                    }
+                    buffer.unmap();
+                    bridge.resources.buffers.insert(id, crate::backend::wgpu::WgpuBuffer {
+                        buffer,
+                        size: buf.size,
+                    });
+                    handles.push(ResourceHandle::Buffer(id));
+                }
+                ResourceCreateDescriptor::BindGroupLayout { id, layout } => {
+                    let id = BindGroupLayoutId(id);
+                    let wgpu_layout = super::bindings::create_bind_group_layout(
+                        &bridge.device.raw, &layout,
+                    );
+                    bridge.resources.bind_group_layouts.insert(id, wgpu_layout);
+                    handles.push(ResourceHandle::BindGroupLayout(id));
+                }
+                ResourceCreateDescriptor::BindGroup { id, group: bg } => {
+                    let id = BindGroupId(id);
+                    let layout = bridge.resources.bind_group_layouts.get(&bg.layout)
+                        .ok_or(Error::fatal(ErrorKind::Unsupported("bind group layout not found")))?;
+                    let mut entries = Vec::new();
+                    for entry in &bg.entries {
+                        match entry {
+                            BindGroupEntryDescriptor::Buffer { binding, buffer, offset, size } => {
+                                let buf_res = bridge.resources.buffers.get(buffer)
+                                    .ok_or(Error::fatal(ErrorKind::Unsupported("buffer not found")))?;
+                                entries.push(wgpu::BindGroupEntry {
+                                    binding: *binding,
+                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                        buffer: &buf_res.buffer,
+                                        offset: *offset,
+                                        size: if *size == 0 { None } else { Some(std::num::NonZeroU64::new(*size).unwrap()) },
+                                    }),
+                                });
+                            }
+                            BindGroupEntryDescriptor::Texture { binding, texture } => {
+                                let tex_res = bridge
+                                    .resources
+                                    .textures
+                                    .get(texture)
+                                    .ok_or_else(|| {
+                                        Error::fatal(ErrorKind::Unsupported(
+                                            "texture not found for bind group",
+                                        ))
+                                    })?;
+                                entries.push(wgpu::BindGroupEntry {
+                                    binding: *binding,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &tex_res.default_view,
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    let wgpu_bg = bridge.device.raw.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("rotex-bg"),
+                        layout,
+                        entries: &entries,
+                    });
+                    bridge.resources.bind_groups.insert(id, wgpu_bg);
+                    handles.push(ResourceHandle::BindGroup(id));
+                }
+                ResourceCreateDescriptor::ComputePipeline { id, pipeline } => {
+                    let id = ComputePipelineId(id);
+                    let result = super::compute_pipeline_cache::create_compute_pipeline(
+                        bridge, &pipeline,
+                    )?;
+                    bridge.resources.compute_pipelines.insert(id, result);
+                    handles.push(ResourceHandle::ComputePipeline(id));
+                }
             }
-            _ => {}
         }
+        Ok(CreatedResources { handles })
     }
-    Ok(CreatedResources { handles })
-}
 
 pub(super) fn update_resources(
     bridge: &mut WgpuBridge,
@@ -97,7 +176,7 @@ pub(super) fn update_resources(
                     }
                     material.texture = texture_update;
                 }
-                bridge.pipeline_cache.retain(|key, _| key.material_id != id);
+                bridge.rhi_pipeline_cache.retain(|key, _| key.material_id != id);
             }
             ResourceUpdateDescriptor::Texture { id, data } => {
                 let texture =
@@ -210,8 +289,6 @@ fn create_buffer<T: Copy>(
 fn create_wgpu_texture(
     device: &crate::backend::wgpu::WgpuDevice,
     texture: TextureDescriptor,
-    texture_bind_group_layout: &wgpu::BindGroupLayout,
-    texture_sampler: &wgpu::Sampler,
 ) -> Result<WgpuTextureResource, Error> {
     let format = map_texture_format(texture.format);
     let width = texture.width.max(1);
@@ -233,25 +310,11 @@ fn create_wgpu_texture(
 
     write_texture_data(device, format, width, height, &raw_texture, &texture.data)?;
 
-    let view = raw_texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_group = device.raw.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("rotex-wgpu-texture-bind-group"),
-        layout: texture_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(texture_sampler),
-            },
-        ],
-    });
+    let default_view = raw_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
     Ok(WgpuTextureResource {
         texture: raw_texture,
-        view,
-        bind_group,
+        default_view,
         format,
         size: (width, height),
     })
@@ -275,20 +338,6 @@ fn write_texture_data(
 ) -> Result<(), Error> {
     let upload = validate_texture_upload(texture_format, width, height, data)?;
     let src = &data[..upload.expected_len];
-    if should_use_staging_upload(upload.bytes_per_row) {
-        write_texture_data_with_staging(device, texture, src, &upload);
-    } else {
-        write_texture_data_with_queue(device, texture, src, &upload);
-    }
-    Ok(())
-}
-
-fn write_texture_data_with_queue(
-    device: &crate::backend::wgpu::WgpuDevice,
-    texture: &wgpu::Texture,
-    data: &[u8],
-    upload: &TextureUploadPlan,
-) {
     device.queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -296,7 +345,7 @@ fn write_texture_data_with_queue(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        data,
+        src,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(upload.bytes_per_row),
@@ -304,77 +353,22 @@ fn write_texture_data_with_queue(
         },
         upload.extent,
     );
-}
-
-fn write_texture_data_with_staging(
-    device: &crate::backend::wgpu::WgpuDevice,
-    texture: &wgpu::Texture,
-    data: &[u8],
-    upload: &TextureUploadPlan,
-) {
-    // Mirrors Vulkan-style uploads: host-visible staging buffer -> copy command into device-local texture.
-    let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded_bytes_per_row = align_to(upload.bytes_per_row, alignment);
-    let mut staged = vec![0_u8; padded_bytes_per_row as usize * upload.height as usize];
-    for row in 0..upload.height as usize {
-        let src_offset = row * upload.bytes_per_row as usize;
-        let dst_offset = row * padded_bytes_per_row as usize;
-        staged[dst_offset..dst_offset + upload.bytes_per_row as usize]
-            .copy_from_slice(&data[src_offset..src_offset + upload.bytes_per_row as usize]);
-    }
-
-    let staging_buffer = device.raw.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("rotex-wgpu-texture-staging"),
-        size: staged.len() as u64,
-        usage: wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: true,
-    });
-    staging_buffer
-        .slice(..)
-        .get_mapped_range_mut()
-        .copy_from_slice(staged.as_slice());
-    staging_buffer.unmap();
-
-    let mut encoder = device
-        .raw
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("rotex-wgpu-texture-upload-encoder"),
-        });
-    encoder.copy_buffer_to_texture(
-        wgpu::TexelCopyBufferInfo {
-            buffer: &staging_buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bytes_per_row),
-                rows_per_image: Some(upload.rows_per_image),
-            },
-        },
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        upload.extent,
-    );
-    device.queue.submit(Some(encoder.finish()));
+    Ok(())
 }
 
 fn validate_material_descriptor(material: &MaterialDescriptor) -> Result<(), Error> {
-    let vert_spv = material.shaders.vertex.spirv_bytes().ok_or_else(|| {
-        Error::recoverable(ErrorKind::InvalidDescriptor("material_shader_bytes_missing"))
-    })?;
-    let frag_spv = material.shaders.fragment.spirv_bytes().ok_or_else(|| {
-        Error::recoverable(ErrorKind::InvalidDescriptor("material_shader_bytes_missing"))
-    })?;
+    let has_vert = material.shaders.vertex.spirv_bytes().is_some()
+        || material.shaders.vertex.wgsl_source().is_some();
+    let has_frag = material.shaders.fragment.spirv_bytes().is_some()
+        || material.shaders.fragment.wgsl_source().is_some();
+    if !has_vert || !has_frag {
+        return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
+            "material_shader_source_missing",
+        )));
+    }
     if material.shaders.vertex.entry_point.is_empty() || material.shaders.fragment.entry_point.is_empty() {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "material_shader_entry_missing",
-        )));
-    }
-    if vert_spv.len() % 4 != 0 || frag_spv.len() % 4 != 0 {
-        return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-            "material_shader_bytes_not_word_aligned",
         )));
     }
     Ok(())
@@ -412,15 +406,24 @@ fn translate_vertex_layout(layout: &VertexBufferLayout) -> Result<WgpuVertexLayo
         translated.push(wgpu_vertex_attribute(attribute));
     }
 
+    let step_mode = match layout.step_mode {
+        rotex_types::VertexStepMode::Vertex => wgpu::VertexStepMode::Vertex,
+        rotex_types::VertexStepMode::Instance => wgpu::VertexStepMode::Instance,
+    };
     Ok(WgpuVertexLayout {
         array_stride: layout.array_stride,
         attributes: translated,
+        step_mode,
     })
 }
 
 fn hash_vertex_layout(layout: &VertexBufferLayout) -> u64 {
     let mut hasher = DefaultHasher::new();
     hasher.write_u64(layout.array_stride);
+    hasher.write_u32(match layout.step_mode {
+        rotex_types::VertexStepMode::Vertex => 0,
+        rotex_types::VertexStepMode::Instance => 1,
+    });
     for attribute in &layout.attributes {
         hasher.write_u32(attribute.location);
         hasher.write_u64(attribute.offset);
@@ -481,15 +484,33 @@ fn validate_texture_upload(
     })
 }
 
-fn should_use_staging_upload(bytes_per_row: u32) -> bool {
-    bytes_per_row.is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-}
 
-fn align_to(value: u32, alignment: u32) -> u32 {
-    if alignment == 0 {
-        return value;
+
+
+fn map_wgpu_buffer_usage(desc: &BufferDescriptor) -> wgpu::BufferUsages {
+    let usages = desc.effective_usages();
+    let mut flags = wgpu::BufferUsages::COPY_DST;
+    if usages.contains(BufferUsages::VERTEX) {
+        flags |= wgpu::BufferUsages::VERTEX;
     }
-    value.div_ceil(alignment) * alignment
+    if usages.contains(BufferUsages::INDEX) {
+        flags |= wgpu::BufferUsages::INDEX;
+    }
+    if usages.contains(BufferUsages::UNIFORM) {
+        flags |= wgpu::BufferUsages::UNIFORM;
+    }
+    if usages.contains(BufferUsages::STORAGE) {
+        flags |= wgpu::BufferUsages::STORAGE;
+    }
+    if flags == wgpu::BufferUsages::COPY_DST {
+        match desc.usage {
+            BufferUsage::Vertex => flags |= wgpu::BufferUsages::VERTEX,
+            BufferUsage::Index => flags |= wgpu::BufferUsages::INDEX,
+            BufferUsage::Uniform => flags |= wgpu::BufferUsages::UNIFORM,
+            BufferUsage::Storage => flags |= wgpu::BufferUsages::STORAGE,
+        }
+    }
+    flags
 }
 
 fn align_to_u64(value: u64, alignment: u64) -> u64 {

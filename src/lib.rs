@@ -39,17 +39,18 @@ mod tests {
             let resources = bridge
                 .create_resources(ResourceBatchCreate {
                     resources: vec![
-                        ResourceCreateDescriptor::Mesh(sample_mesh(
+                        ResourceCreateDescriptor::Mesh { id: 1, mesh: sample_mesh(
                             [
                                 [0.0, 0.5, 0.0, 1.0, 0.0, 0.0],
                                 [-0.5, -0.5, 0.0, 0.0, 1.0, 0.0],
                                 [0.5, -0.5, 0.0, 0.0, 0.0, 1.0],
                             ],
                             vec![0, 1, 2],
-                        )),
-                        ResourceCreateDescriptor::Material(MaterialDescriptor {
+                        ) },
+                        ResourceCreateDescriptor::Material { id: 2, material: MaterialDescriptor {
                             shaders: GraphicsShaderPackage {
                                 vertex: ShaderPackage {
+                                    source_hash: 0,
                                     stage: ShaderStage::Vertex,
                                     entry_point: "vs_main".to_string(),
                                     layout: AbstractPipelineLayout {
@@ -64,6 +65,7 @@ mod tests {
                                     },
                                 },
                                 fragment: ShaderPackage {
+                                    source_hash: 0,
                                     stage: ShaderStage::Fragment,
                                     entry_point: "fs_main".to_string(),
                                     layout: AbstractPipelineLayout {
@@ -85,13 +87,14 @@ mod tests {
                             enable_depth: true,
                             cull_mode: CullMode::Back,
                             texture: None,
-                        }),
-                        ResourceCreateDescriptor::Texture(TextureDescriptor {
+                        } },
+                        ResourceCreateDescriptor::Texture { id: 3, texture: TextureDescriptor {
                             width: 1,
                             height: 1,
                             format: TextureFormat::Rgba8Unorm,
                             data: vec![255, 255, 255, 255],
-                        }),
+                            render_attachment: false,
+                        } },
                     ],
                 })
                 .expect("resource creation should succeed");
@@ -104,6 +107,10 @@ mod tests {
                     ResourceHandle::Mesh(id) => mesh_id = Some(id),
                     ResourceHandle::Material(id) => material_id = Some(id),
                     ResourceHandle::Texture(id) => texture_id = Some(id),
+                    ResourceHandle::Buffer(_)
+                    | ResourceHandle::ComputePipeline(_)
+                    | ResourceHandle::BindGroupLayout(_)
+                    | ResourceHandle::BindGroup(_) => {}
                 }
             }
 

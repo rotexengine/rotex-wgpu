@@ -21,19 +21,24 @@ impl WgpuSurface {
         height: u32,
     ) -> Result<WgpuSwapchain, Error> {
         let caps = self.raw.get_capabilities(&device.adapter);
-        let preferred_formats = [
-            wgpu::TextureFormat::Bgra8UnormSrgb,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
-            wgpu::TextureFormat::Bgra8Unorm,
-            wgpu::TextureFormat::Rgba8Unorm,
-        ];
-        let format = preferred_formats
-            .iter()
-            .copied()
-            .find(|candidate| caps.formats.contains(candidate))
-            .or_else(|| caps.formats.iter().copied().find(wgpu::TextureFormat::is_srgb))
-            .or_else(|| caps.formats.first().copied())
-            .ok_or_else(|| Error::fatal(ErrorKind::NoCompatibleDevice))?;
+        let format = *caps.formats.first().ok_or_else(|| {
+            Error::fatal(ErrorKind::NoCompatibleDevice)
+        })?;
+        let view_formats = if format.is_srgb() {
+            let linear = match format {
+                wgpu::TextureFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8Unorm,
+                wgpu::TextureFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8Unorm,
+                _ => format,
+            };
+            vec![linear]
+        } else {
+            let srgb = match format {
+                wgpu::TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8UnormSrgb,
+                wgpu::TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8UnormSrgb,
+                _ => format,
+            };
+            vec![srgb]
+        };
         let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
             wgpu::PresentMode::Mailbox
         } else if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
@@ -60,7 +65,7 @@ impl WgpuSurface {
             height: height.max(1),
             present_mode,
             alpha_mode,
-            view_formats: vec![],
+            view_formats,
             desired_maximum_frame_latency: 2,
         };
         self.raw.configure(&device.raw, &config);
