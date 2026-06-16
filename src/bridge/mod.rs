@@ -1,8 +1,11 @@
+mod bindings;
 mod compute_pipeline_cache;
+mod frame_profiler;
 mod init;
 mod pipeline_cache;
 mod render;
 mod resources;
+mod shader_cache;
 mod surface;
 mod types;
 
@@ -14,27 +17,18 @@ use rotex_core::{
     Error as CoreError, ErrorKind as CoreErrorKind, GpuBackend, Severity as CoreSeverity,
 };
 use rotex_types::{
-    CreatedResources, DeviceDescriptor, Extent2D, InstanceDescriptor, RenderCommand,
-    ResourceBatchCreate, ResourceBatchUpdate, SceneDescriptor, SurfaceDescriptor, TextureId,
-    TextureReadback,
+    BufferId, ComputePipelineId, CreatedResources, DeviceDescriptor, Extent2D,
+    InstanceDescriptor, ResourceBatchCreate, ResourceBatchUpdate, RhiCommand,
+    SurfaceDescriptor, TextureId, TextureReadback,
 };
 
+pub use self::frame_profiler::{FrameProfilerHook, FrameTimingSnapshot};
+use self::shader_cache::ShaderCacheKey;
 use self::types::{DepthTarget, DepthTargetKey, MaterialPipelineKey, ResourceStorage};
 
 pub struct WgpuBridge {
     pub(crate) instance: WgpuInstance,
     pub(crate) device: WgpuDevice,
-    pub(crate) global_bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) material_bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) object_bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) texture_sampler: wgpu::Sampler,
-    pub(crate) global_uniform_buffer: wgpu::Buffer,
-    pub(crate) object_uniform_buffer: wgpu::Buffer,
-    pub(crate) global_bind_group: wgpu::BindGroup,
-    pub(crate) object_bind_group: wgpu::BindGroup,
-    pub(crate) fallback_texture_bind_group: wgpu::BindGroup,
-    pub(crate) object_aligned_stride: u32,
-    pub(crate) object_buffer_capacity: u32,
     pub(crate) surface: Option<WgpuSurface>,
     pub(crate) swapchain: Option<WgpuSwapchain>,
     pub(crate) resources: ResourceStorage,
@@ -43,8 +37,22 @@ pub struct WgpuBridge {
     pub(crate) next_texture_id: u64,
     pub(crate) next_buffer_id: u64,
     pub(crate) next_compute_pipeline_id: u64,
-    pub(crate) pipeline_cache: HashMap<MaterialPipelineKey, wgpu::RenderPipeline>,
+    pub(crate) next_bind_group_layout_id: u64,
+    pub(crate) next_bind_group_id: u64,
+    pub(crate) pipeline_cache: HashMap<MaterialPipelineKey, types::WgpuGraphicsPipelineResource>,
+    pub(crate) shader_module_cache: HashMap<ShaderCacheKey, wgpu::ShaderModule>,
     pub(crate) depth_targets: HashMap<DepthTargetKey, DepthTarget>,
+    pub(crate) compute_bind_groups:
+        HashMap<(ComputePipelineId, BufferId), Vec<(u32, wgpu::BindGroup)>>,
+    pub(crate) recording_encoder: Option<wgpu::CommandEncoder>,
+    pub(crate) surface_texture: Option<wgpu::SurfaceTexture>,
+    pub(crate) swapchain_color_view: Option<wgpu::TextureView>,
+    pub(crate) swapchain_format: Option<wgpu::TextureFormat>,
+    pub(crate) current_frame_index: u32,
+    pub(crate) active_pass: Option<render::ActiveGraphicsPass>,
+    pub(crate) frame_profiler_hook: Option<FrameProfilerHook>,
+    pub(crate) pending_acquire_skips: u32,
+    pre_present_hook: Option<fn()>,
 }
 
 impl WgpuBridge {
@@ -70,12 +78,16 @@ impl WgpuBridge {
         resources::update_resources(self, descriptor)
     }
 
-    pub fn execute(
-        &mut self,
-        scene: &SceneDescriptor,
-        commands: &[RenderCommand],
-    ) -> Result<(), Error> {
-        render::execute(self, scene, commands)
+    pub fn execute(&mut self, commands: &[RhiCommand]) -> Result<(), Error> {
+        render::execute(self, commands)
+    }
+
+    pub fn set_frame_profiler_hook(&mut self, hook: Option<FrameProfilerHook>) {
+        self.frame_profiler_hook = hook;
+    }
+
+    pub fn set_pre_present_hook(&mut self, hook: Option<fn()>) {
+        self.pre_present_hook = hook;
     }
 
     pub fn resize(&mut self, extent: Extent2D) -> Result<(), Error> {
@@ -92,7 +104,6 @@ impl WgpuBridge {
 
     pub fn unsupported_feature_reporting() -> &'static [&'static str] {
         &[
-            "VertexStepMode is not modeled by rotex_types and is treated as vertex-rate input.",
             "VertexFormat support is limited to the rotex_types subset (Float32/Float32x2/Float32x3/Float32x4/Uint32).",
             "TextureFormat::Rgba8UnormSrgb is unavailable; textures use TextureFormat::Rgba8Unorm.",
             "Advanced Vulkan SPIR-V operations (for example hardware ray tracing or subgroup operations) are unsupported by WGPU WebAPI and may panic/fail during make_spirv translation.",
@@ -141,12 +152,8 @@ impl GpuBackend for WgpuBridge {
         WgpuBridge::update_resources(self, descriptor).map_err(to_core_error)
     }
 
-    fn execute(
-        &mut self,
-        scene: &rotex_types::SceneDescriptor,
-        commands: &[rotex_types::RenderCommand],
-    ) -> Result<(), CoreError> {
-        WgpuBridge::execute(self, scene, commands).map_err(to_core_error)
+    fn execute(&mut self, commands: &[rotex_types::RhiCommand]) -> Result<(), CoreError> {
+        WgpuBridge::execute(self, commands).map_err(to_core_error)
     }
 
     fn resize(&mut self, extent: rotex_types::Extent2D) -> Result<(), CoreError> {

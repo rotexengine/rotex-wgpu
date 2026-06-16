@@ -31,12 +31,7 @@ impl WgpuSurface {
             .iter()
             .copied()
             .find(|candidate| caps.formats.contains(candidate))
-            .or_else(|| {
-                caps.formats
-                    .iter()
-                    .copied()
-                    .find(wgpu::TextureFormat::is_srgb)
-            })
+            .or_else(|| caps.formats.iter().copied().find(wgpu::TextureFormat::is_srgb))
             .or_else(|| caps.formats.first().copied())
             .ok_or_else(|| Error::fatal(ErrorKind::NoCompatibleDevice))?;
         let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {

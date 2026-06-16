@@ -10,7 +10,6 @@ pub(super) fn pipeline_for_draw<'a>(
     vertex_layout_id: u64,
     vertex_layout: &WgpuVertexLayout,
     pass_uses_depth: bool,
-    color_format: wgpu::TextureFormat,
 ) -> Result<&'a wgpu::RenderPipeline, Error> {
     let material = bridge
         .resources
@@ -21,11 +20,10 @@ pub(super) fn pipeline_for_draw<'a>(
         material_id,
         vertex_layout_id,
         depth_enabled: pass_uses_depth && material.enable_depth,
-        color_format,
     };
 
     if !bridge.pipeline_cache.contains_key(&key) {
-        let pipeline = build_pipeline(bridge, material_id, vertex_layout, key)?;
+        let pipeline = build_pipeline(bridge, material_id, vertex_layout, key.depth_enabled)?;
         bridge.pipeline_cache.insert(key, pipeline);
     }
 
@@ -44,9 +42,9 @@ fn build_pipeline(
     bridge: &WgpuBridge,
     material_id: MaterialId,
     vertex_layout: &WgpuVertexLayout,
-    key: MaterialPipelineKey,
+    depth_enabled: bool,
 ) -> Result<wgpu::RenderPipeline, Error> {
-    let _swapchain = bridge
+    let swapchain = bridge
         .swapchain
         .as_ref()
         .ok_or_else(surface_not_attached_error)?;
@@ -61,26 +59,28 @@ fn build_pipeline(
         rotex_types::CullMode::Back => Some(wgpu::Face::Back),
     };
 
+    let vertex_spv = material.shaders.vertex.spirv_bytes().ok_or_else(|| {
+        Error::recoverable(ErrorKind::InvalidDescriptor("vertex_shader_no_spirv"))
+    })?;
+    let fragment_spv = material.shaders.fragment.spirv_bytes().ok_or_else(|| {
+        Error::recoverable(ErrorKind::InvalidDescriptor("fragment_shader_no_spirv"))
+    })?;
     let vertex_shader = create_shader_module_from_spirv(
         &bridge.device.raw,
         "rotex-wgpu-vertex-shader",
-        &material.vertex_shader_spv,
+        vertex_spv,
     )?;
     let fragment_shader = create_shader_module_from_spirv(
         &bridge.device.raw,
         "rotex-wgpu-fragment-shader",
-        &material.fragment_shader_spv,
+        fragment_spv,
     )?;
     let layout = bridge
         .device
         .raw
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rotex-wgpu-pipeline-layout"),
-            bind_group_layouts: &[
-                Some(&bridge.global_bind_group_layout),
-                Some(&bridge.material_bind_group_layout),
-                Some(&bridge.object_bind_group_layout),
-            ],
+            bind_group_layouts: &[Some(&bridge.texture_bind_group_layout)],
             immediate_size: 0,
         });
 
@@ -94,7 +94,7 @@ fn build_pipeline(
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &vertex_shader,
-                entry_point: Some(material.vertex_entry.as_str()),
+                entry_point: Some(material.shaders.vertex.entry_point.as_str()),
                 buffers: &[vertex_layout],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
@@ -107,7 +107,7 @@ fn build_pipeline(
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: if key.depth_enabled {
+            depth_stencil: if depth_enabled {
                 Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth24Plus,
                     depth_write_enabled: Some(true),
@@ -121,9 +121,9 @@ fn build_pipeline(
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &fragment_shader,
-                entry_point: Some(material.fragment_entry.as_str()),
+                entry_point: Some(material.shaders.fragment.entry_point.as_str()),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: key.color_format,
+                    format: swapchain.config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],

@@ -1,19 +1,17 @@
 use crate::error::{Error, ErrorKind};
 use rotex_types::{
-    BufferDescriptor, BufferId, BufferUsage, ComputePipelineId, CreatedResources,
-    MaterialDescriptor, MaterialId, MeshDescriptor, MeshId, ResourceBatchCreate,
+    CreatedResources, MaterialDescriptor, MaterialId, MeshDescriptor, MeshId, ResourceBatchCreate,
     ResourceBatchUpdate, ResourceCreateDescriptor, ResourceHandle, ResourceUpdateDescriptor,
     TextureDescriptor, TextureFormat, TextureId, VertexBufferLayout, VertexFormat,
+    VertexStreamData,
 };
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hasher};
 
 use super::WgpuBridge;
-use super::compute_pipeline_cache;
 use super::types::{
-    WgpuBufferResource, WgpuMeshResource, WgpuTextureResource, WgpuVertexLayout, bytes_per_pixel,
-    index_format_size, map_index_format, map_texture_format, vertex_format_size,
-    wgpu_vertex_attribute,
+    WgpuMeshResource, WgpuTextureResource, WgpuVertexLayout, bytes_per_pixel, index_format_size,
+    map_index_format, map_texture_format, vertex_format_size, wgpu_vertex_attribute,
 };
 
 pub(super) fn create_resources(
@@ -45,29 +43,13 @@ pub(super) fn create_resources(
                 let gpu_texture = create_wgpu_texture(
                     &bridge.device,
                     texture,
-                    &bridge.material_bind_group_layout,
+                    &bridge.texture_bind_group_layout,
                     &bridge.texture_sampler,
                 )?;
                 bridge.resources.textures.insert(id, gpu_texture);
                 handles.push(ResourceHandle::Texture(id));
             }
-            ResourceCreateDescriptor::Buffer(buffer) => {
-                let id = BufferId(bridge.next_buffer_id);
-                bridge.next_buffer_id += 1;
-                bridge
-                    .resources
-                    .buffers
-                    .insert(id, create_wgpu_buffer(&bridge.device.raw, &buffer)?);
-                handles.push(ResourceHandle::Buffer(id));
-            }
-            ResourceCreateDescriptor::ComputePipeline(compute_pipeline) => {
-                let id = ComputePipelineId(bridge.next_compute_pipeline_id);
-                bridge.next_compute_pipeline_id += 1;
-                let pipeline =
-                    compute_pipeline_cache::create_compute_pipeline(bridge, &compute_pipeline)?;
-                bridge.resources.compute_pipelines.insert(id, pipeline);
-                handles.push(ResourceHandle::ComputePipeline(id));
-            }
+            _ => {}
         }
     }
     Ok(CreatedResources { handles })
@@ -81,15 +63,13 @@ pub(super) fn update_resources(
         match update {
             ResourceUpdateDescriptor::Mesh {
                 id,
-                vertex_data,
-                vertex_layout,
+                vertex_streams,
                 index_data,
                 index_format,
                 index_count,
             } => {
                 let mesh = MeshDescriptor {
-                    vertex_data,
-                    vertex_layout,
+                    vertex_streams,
                     index_data,
                     index_format,
                     index_count,
@@ -119,19 +99,6 @@ pub(super) fn update_resources(
                 }
                 bridge.pipeline_cache.retain(|key, _| key.material_id != id);
             }
-            ResourceUpdateDescriptor::Buffer { id, data } => {
-                let buffer = bridge
-                    .resources
-                    .buffers
-                    .get(&id)
-                    .ok_or_else(|| Error::recoverable(ErrorKind::ResourceNotFound("buffer")))?;
-                if data.len() as u64 > buffer.size {
-                    return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-                        "buffer_update_too_large",
-                    )));
-                }
-                bridge.device.queue.write_buffer(&buffer.buffer, 0, &data);
-            }
             ResourceUpdateDescriptor::Texture { id, data } => {
                 let texture =
                     bridge.resources.textures.get(&id).ok_or_else(|| {
@@ -146,59 +113,10 @@ pub(super) fn update_resources(
                     &data,
                 )?;
             }
+            _ => {}
         }
     }
     Ok(())
-}
-
-fn create_wgpu_buffer(
-    device: &wgpu::Device,
-    desc: &BufferDescriptor,
-) -> Result<WgpuBufferResource, Error> {
-    if desc.size == 0 {
-        return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-            "buffer_zero_size",
-        )));
-    }
-    let usage = map_buffer_usage(desc.usage);
-    let aligned_size = align_to_u64(desc.size.max(1), wgpu::COPY_BUFFER_ALIGNMENT);
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("rotex-wgpu-buffer"),
-        size: aligned_size,
-        usage,
-        mapped_at_creation: desc.initial_data.is_some(),
-    });
-    if let Some(data) = &desc.initial_data {
-        if data.len() as u64 > desc.size {
-            return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-                "buffer_initial_data_too_large",
-            )));
-        }
-        let mut staged = vec![0_u8; aligned_size as usize];
-        staged[..data.len()].copy_from_slice(data);
-        buffer
-            .slice(..)
-            .get_mapped_range_mut()
-            .copy_from_slice(&staged);
-        buffer.unmap();
-    }
-    Ok(WgpuBufferResource {
-        buffer,
-        size: desc.size,
-    })
-}
-
-fn map_buffer_usage(usage: BufferUsage) -> wgpu::BufferUsages {
-    match usage {
-        BufferUsage::Vertex => wgpu::BufferUsages::VERTEX,
-        BufferUsage::Index => wgpu::BufferUsages::INDEX,
-        BufferUsage::Uniform => wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        BufferUsage::Storage => {
-            wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC
-        }
-    }
 }
 
 fn create_wgpu_mesh(
@@ -215,11 +133,19 @@ fn create_wgpu_mesh(
             "mesh_missing_index_data",
         )));
     }
-    if mesh.vertex_data.is_empty() {
-        return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-            "mesh_missing_vertex_data",
-        )));
-    }
+
+    let (vertex_data, vertex_layout) = match &mesh.vertex_streams[0].data {
+        VertexStreamData::Static(data) => {
+            if data.is_empty() {
+                return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
+                    "mesh_missing_vertex_data",
+                )));
+            }
+            (data.as_slice(), &mesh.vertex_streams[0].layout)
+        }
+        VertexStreamData::External(_) => (&[][..], &mesh.vertex_streams[0].layout),
+    };
+
     let index_stride = index_format_size(mesh.index_format);
     let expected_index_len = (mesh.index_count as usize)
         .checked_mul(index_stride)
@@ -230,12 +156,12 @@ fn create_wgpu_mesh(
         )));
     }
 
-    let vertex_layout = translate_vertex_layout(mesh)?;
+    let vertex_layout = translate_vertex_layout(vertex_layout)?;
 
     let vertex_buffer = create_buffer(
         device,
         wgpu::BufferUsages::VERTEX,
-        mesh.vertex_data.as_slice(),
+        vertex_data,
         "rotex-wgpu-vertex-buffer",
     );
     let index_buffer = create_buffer(
@@ -250,7 +176,7 @@ fn create_wgpu_mesh(
         index_buffer,
         index_format: map_index_format(mesh.index_format),
         index_count: mesh.index_count,
-        vertex_layout_id: hash_vertex_layout(&mesh.vertex_layout),
+        vertex_layout_id: hash_vertex_layout(&mesh.vertex_streams[0].layout),
         vertex_layout,
     })
 }
@@ -284,16 +210,12 @@ fn create_buffer<T: Copy>(
 fn create_wgpu_texture(
     device: &crate::backend::wgpu::WgpuDevice,
     texture: TextureDescriptor,
-    material_bind_group_layout: &wgpu::BindGroupLayout,
+    texture_bind_group_layout: &wgpu::BindGroupLayout,
     texture_sampler: &wgpu::Sampler,
 ) -> Result<WgpuTextureResource, Error> {
     let format = map_texture_format(texture.format);
     let width = texture.width.max(1);
     let height = texture.height.max(1);
-    let mut usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
-    if texture.render_attachment {
-        usage |= wgpu::TextureUsages::RENDER_ATTACHMENT;
-    }
     let raw_texture = device.raw.create_texture(&wgpu::TextureDescriptor {
         label: Some("rotex-wgpu-texture"),
         size: wgpu::Extent3d {
@@ -305,21 +227,16 @@ fn create_wgpu_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
 
     write_texture_data(device, format, width, height, &raw_texture, &texture.data)?;
 
     let view = raw_texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let render_view = if texture.render_attachment {
-        Some(raw_texture.create_view(&wgpu::TextureViewDescriptor::default()))
-    } else {
-        None
-    };
     let bind_group = device.raw.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("rotex-wgpu-texture-bind-group"),
-        layout: material_bind_group_layout,
+        layout: texture_bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -334,7 +251,6 @@ fn create_wgpu_texture(
     Ok(WgpuTextureResource {
         texture: raw_texture,
         view,
-        render_view,
         bind_group,
         format,
         size: (width, height),
@@ -445,17 +361,18 @@ fn write_texture_data_with_staging(
 }
 
 fn validate_material_descriptor(material: &MaterialDescriptor) -> Result<(), Error> {
-    if material.vertex_shader_spv.is_empty() || material.fragment_shader_spv.is_empty() {
-        return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-            "material_shader_bytes_missing",
-        )));
-    }
-    if material.vertex_entry.is_empty() || material.fragment_entry.is_empty() {
+    let vert_spv = material.shaders.vertex.spirv_bytes().ok_or_else(|| {
+        Error::recoverable(ErrorKind::InvalidDescriptor("material_shader_bytes_missing"))
+    })?;
+    let frag_spv = material.shaders.fragment.spirv_bytes().ok_or_else(|| {
+        Error::recoverable(ErrorKind::InvalidDescriptor("material_shader_bytes_missing"))
+    })?;
+    if material.shaders.vertex.entry_point.is_empty() || material.shaders.fragment.entry_point.is_empty() {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "material_shader_entry_missing",
         )));
     }
-    if material.vertex_shader_spv.len() % 4 != 0 || material.fragment_shader_spv.len() % 4 != 0 {
+    if vert_spv.len() % 4 != 0 || frag_spv.len() % 4 != 0 {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "material_shader_bytes_not_word_aligned",
         )));
@@ -463,8 +380,7 @@ fn validate_material_descriptor(material: &MaterialDescriptor) -> Result<(), Err
     Ok(())
 }
 
-fn translate_vertex_layout(mesh: &MeshDescriptor) -> Result<WgpuVertexLayout, Error> {
-    let layout = &mesh.vertex_layout;
+fn translate_vertex_layout(layout: &VertexBufferLayout) -> Result<WgpuVertexLayout, Error> {
     if layout.array_stride == 0 {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "vertex_layout_zero_stride",
@@ -473,11 +389,6 @@ fn translate_vertex_layout(mesh: &MeshDescriptor) -> Result<WgpuVertexLayout, Er
     if layout.attributes.is_empty() {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "vertex_layout_missing_attributes",
-        )));
-    }
-    if mesh.vertex_data.len() % layout.array_stride as usize != 0 {
-        return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-            "vertex_data_stride_mismatch",
         )));
     }
 

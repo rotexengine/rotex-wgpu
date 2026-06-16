@@ -6,3 +6,179 @@ pub mod error;
 pub use backend::wgpu;
 pub use bridge::WgpuBridge;
 pub use error::{Error, ErrorKind, Severity};
+
+pub mod rotex_types {
+    pub use ::rotex_types::*;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WgpuBridge;
+    use super::rotex_types::{
+        AbstractPipelineLayout, CullMode, DeviceDescriptor, GraphicsShaderPackage, IndexFormat,
+        InstanceDescriptor, MaterialDescriptor, MeshDescriptor, ResourceBatchCreate,
+        ResourceBatchUpdate, ResourceCreateDescriptor, ResourceHandle, ResourceUpdateDescriptor,
+        ShaderPackage, ShaderPayload, ShaderStage, ShaderVariantMap, TextureDescriptor,
+        TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
+    };
+
+    #[test]
+    fn headless_resource_lifecycle_smoke() {
+        pollster::block_on(async {
+            let mut bridge =
+                match WgpuBridge::new(InstanceDescriptor::default(), DeviceDescriptor::default())
+                    .await
+                {
+                    Ok(bridge) => bridge,
+                    Err(_) => {
+                        // Allow running tests on systems without a suitable graphics adapter.
+                        return;
+                    }
+                };
+
+            let resources = bridge
+                .create_resources(ResourceBatchCreate {
+                    resources: vec![
+                        ResourceCreateDescriptor::Mesh(sample_mesh(
+                            [
+                                [0.0, 0.5, 0.0, 1.0, 0.0, 0.0],
+                                [-0.5, -0.5, 0.0, 0.0, 1.0, 0.0],
+                                [0.5, -0.5, 0.0, 0.0, 0.0, 1.0],
+                            ],
+                            vec![0, 1, 2],
+                        )),
+                        ResourceCreateDescriptor::Material(MaterialDescriptor {
+                            shaders: GraphicsShaderPackage {
+                                vertex: ShaderPackage {
+                                    stage: ShaderStage::Vertex,
+                                    entry_point: "vs_main".to_string(),
+                                    layout: AbstractPipelineLayout {
+                                        bind_groups: vec![],
+                                        push_constants: vec![],
+                                    },
+                                    variants: ShaderVariantMap {
+                                        spirv: Some(ShaderPayload::SpirV(vec![
+                                            0x03, 0x02, 0x23, 0x07,
+                                        ])),
+                                        ..Default::default()
+                                    },
+                                },
+                                fragment: ShaderPackage {
+                                    stage: ShaderStage::Fragment,
+                                    entry_point: "fs_main".to_string(),
+                                    layout: AbstractPipelineLayout {
+                                        bind_groups: vec![],
+                                        push_constants: vec![],
+                                    },
+                                    variants: ShaderVariantMap {
+                                        spirv: Some(ShaderPayload::SpirV(vec![
+                                            0x03, 0x02, 0x23, 0x07,
+                                        ])),
+                                        ..Default::default()
+                                    },
+                                },
+                                layout: AbstractPipelineLayout {
+                                    bind_groups: vec![],
+                                    push_constants: vec![],
+                                },
+                            },
+                            enable_depth: true,
+                            cull_mode: CullMode::Back,
+                            texture: None,
+                        }),
+                        ResourceCreateDescriptor::Texture(TextureDescriptor {
+                            width: 1,
+                            height: 1,
+                            format: TextureFormat::Rgba8Unorm,
+                            data: vec![255, 255, 255, 255],
+                        }),
+                    ],
+                })
+                .expect("resource creation should succeed");
+
+            let mut mesh_id = None;
+            let mut material_id = None;
+            let mut texture_id = None;
+            for handle in resources.handles {
+                match handle {
+                    ResourceHandle::Mesh(id) => mesh_id = Some(id),
+                    ResourceHandle::Material(id) => material_id = Some(id),
+                    ResourceHandle::Texture(id) => texture_id = Some(id),
+                }
+            }
+
+            bridge
+                .update_resources(ResourceBatchUpdate {
+                    updates: vec![
+                        ResourceUpdateDescriptor::Mesh {
+                            id: mesh_id.expect("mesh id"),
+                            vertex_streams: sample_mesh(
+                                [
+                                    [0.0, 0.25, 0.0, 1.0, 1.0, 1.0],
+                                    [-0.25, -0.25, 0.0, 1.0, 1.0, 1.0],
+                                    [0.25, -0.25, 0.0, 1.0, 1.0, 1.0],
+                                ],
+                                vec![0, 1, 2],
+                            )
+                            .vertex_streams,
+                            index_data: vec![0, 0, 1, 0, 2, 0],
+                            index_format: IndexFormat::Uint16,
+                            index_count: 3,
+                        },
+                        ResourceUpdateDescriptor::Material {
+                            id: material_id.expect("material id"),
+                            enable_depth: Some(false),
+                            texture: Some(texture_id),
+                        },
+                        ResourceUpdateDescriptor::Texture {
+                            id: texture_id.expect("texture id"),
+                            data: vec![0, 0, 0, 255],
+                        },
+                    ],
+                })
+                .expect("resource update should succeed");
+
+            bridge.destroy();
+        });
+    }
+
+    fn sample_mesh(vertices: [[f32; 6]; 3], indices: Vec<u16>) -> MeshDescriptor {
+        let mut vertex_data = Vec::with_capacity(vertices.len() * 6 * std::mem::size_of::<f32>());
+        for vertex in vertices {
+            for component in vertex {
+                vertex_data.extend_from_slice(component.to_le_bytes().as_slice());
+            }
+        }
+        let index_count = indices.len() as u32;
+        let mut index_data = Vec::with_capacity(indices.len() * std::mem::size_of::<u16>());
+        for index in indices {
+            index_data.extend_from_slice(index.to_le_bytes().as_slice());
+        }
+        MeshDescriptor::single(
+            vertex_data,
+            default_vertex_layout(),
+            index_data,
+            IndexFormat::Uint16,
+            index_count,
+        )
+    }
+
+    fn default_vertex_layout() -> VertexBufferLayout {
+        VertexBufferLayout {
+            array_stride: (6 * std::mem::size_of::<f32>()) as u64,
+            step_mode: rotex_types::resource::VertexStepMode::Vertex,
+            attributes: vec![
+                VertexAttribute {
+                    format: VertexFormat::Float32x3,
+                    offset: 0,
+                    location: 0,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Float32x3,
+                    offset: (3 * std::mem::size_of::<f32>()) as u64,
+                    location: 1,
+                },
+            ],
+        }
+    }
+}

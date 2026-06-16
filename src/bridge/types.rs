@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
-use rotex_types::resource::BufferId;
 use rotex_types::{
-    ComputePipelineDescriptor, ComputePipelineId, IndexFormat, MaterialDescriptor, MaterialId,
-    MeshId, TextureFormat, TextureId, VertexAttribute, VertexFormat,
+    IndexFormat, MaterialDescriptor, MaterialId, MeshId, TextureFormat, TextureId, VertexAttribute,
+    VertexFormat,
 };
 
 #[derive(Debug, Clone)]
@@ -16,6 +15,7 @@ impl WgpuVertexLayout {
     pub fn as_wgpu(&self) -> wgpu::VertexBufferLayout<'_> {
         wgpu::VertexBufferLayout {
             array_stride: self.array_stride,
+            // rotex_types does not model step mode; WGPU backend uses vertex-rate input.
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &self.attributes,
         }
@@ -55,17 +55,11 @@ impl WgpuMeshResource {
 
 pub struct WgpuTextureResource {
     pub texture: wgpu::Texture,
+    #[allow(dead_code)]
     pub view: wgpu::TextureView,
-    pub render_view: Option<wgpu::TextureView>,
     pub bind_group: wgpu::BindGroup,
     pub format: wgpu::TextureFormat,
     pub size: (u32, u32),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DepthTargetKey {
-    Swapchain { width: u32, height: u32 },
-    Texture(TextureId),
 }
 
 pub struct DepthTarget {
@@ -79,18 +73,6 @@ pub struct MaterialPipelineKey {
     pub material_id: MaterialId,
     pub vertex_layout_id: u64,
     pub depth_enabled: bool,
-    pub color_format: wgpu::TextureFormat,
-}
-
-pub struct WgpuBufferResource {
-    pub buffer: wgpu::Buffer,
-    pub size: u64,
-}
-
-pub struct WgpuComputePipelineResource {
-    pub descriptor: ComputePipelineDescriptor,
-    pub pipeline: wgpu::ComputePipeline,
-    pub bind_group_layouts: Vec<wgpu::BindGroupLayout>,
 }
 
 #[derive(Default)]
@@ -98,13 +80,7 @@ pub struct ResourceStorage {
     pub meshes: HashMap<MeshId, WgpuMeshResource>,
     pub materials: HashMap<MaterialId, MaterialDescriptor>,
     pub textures: HashMap<TextureId, WgpuTextureResource>,
-    pub buffers: HashMap<BufferId, WgpuBufferResource>,
-    pub compute_pipelines: HashMap<ComputePipelineId, WgpuComputePipelineResource>,
 }
-
-pub const GLOBAL_UBO_SIZE: u64 = 128;
-pub const OBJECT_MATRIX_SIZE: u64 = 64;
-pub const INITIAL_OBJECT_CAPACITY: u32 = 256;
 
 pub fn map_vertex_format(format: VertexFormat) -> wgpu::VertexFormat {
     match format {
@@ -152,9 +128,4 @@ pub fn index_format_size(format: IndexFormat) -> usize {
         IndexFormat::Uint16 => 2,
         IndexFormat::Uint32 => 4,
     }
-}
-
-pub fn align_uniform_size(size: u64, alignment: u32) -> u32 {
-    let alignment = alignment.max(1) as u64;
-    ((size + alignment - 1) / alignment * alignment) as u32
 }
