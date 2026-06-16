@@ -46,7 +46,8 @@ pub(super) fn render(
             label: Some("rotex-wgpu-encoder"),
         });
 
-    for pass in &frame.passes {
+    for pass_outer in &frame.passes {
+        let rotex_types::FramePass::Graphics(pass) = pass_outer else { continue; };
         let draw_list: Vec<usize> = if pass.instance_indices.is_empty() {
             (0..scene.instances.len()).collect()
         } else {
@@ -57,7 +58,7 @@ pub(super) fn render(
                 .collect()
         };
 
-        let pass_uses_depth = pass.clear_depth.is_some()
+        let pass_uses_depth = pass.uses_depth_attachment()
             || draw_list.iter().any(|index| {
                 let instance = scene.instances[*index];
                 bridge
@@ -74,7 +75,7 @@ pub(super) fn render(
             Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(pass.clear_depth.unwrap_or(1.0)),
+                    load: wgpu::LoadOp::Clear(pass.clear_depth),
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,

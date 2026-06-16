@@ -15,10 +15,11 @@ pub mod rotex_types {
 mod tests {
     use super::WgpuBridge;
     use super::rotex_types::{
-        DeviceDescriptor, IndexFormat, InstanceDescriptor, MaterialDescriptor, MeshDescriptor,
-        ResourceBatchCreate, ResourceBatchUpdate, ResourceCreateDescriptor, ResourceHandle,
-        ResourceUpdateDescriptor, TextureDescriptor, TextureFormat, VertexAttribute,
-        VertexBufferLayout, VertexFormat,
+        AbstractPipelineLayout, CullMode, DeviceDescriptor, GraphicsShaderPackage, IndexFormat,
+        InstanceDescriptor, MaterialDescriptor, MeshDescriptor, ResourceBatchCreate,
+        ResourceBatchUpdate, ResourceCreateDescriptor, ResourceHandle, ResourceUpdateDescriptor,
+        ShaderPackage, ShaderPayload, ShaderStage, ShaderVariantMap, TextureDescriptor,
+        TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
     };
 
     #[test]
@@ -47,12 +48,43 @@ mod tests {
                             vec![0, 1, 2],
                         )),
                         ResourceCreateDescriptor::Material(MaterialDescriptor {
+                            shaders: GraphicsShaderPackage {
+                                vertex: ShaderPackage {
+                                    stage: ShaderStage::Vertex,
+                                    entry_point: "vs_main".to_string(),
+                                    layout: AbstractPipelineLayout {
+                                        bind_groups: vec![],
+                                        push_constants: vec![],
+                                    },
+                                    variants: ShaderVariantMap {
+                                        spirv: Some(ShaderPayload::SpirV(vec![
+                                            0x03, 0x02, 0x23, 0x07,
+                                        ])),
+                                        ..Default::default()
+                                    },
+                                },
+                                fragment: ShaderPackage {
+                                    stage: ShaderStage::Fragment,
+                                    entry_point: "fs_main".to_string(),
+                                    layout: AbstractPipelineLayout {
+                                        bind_groups: vec![],
+                                        push_constants: vec![],
+                                    },
+                                    variants: ShaderVariantMap {
+                                        spirv: Some(ShaderPayload::SpirV(vec![
+                                            0x03, 0x02, 0x23, 0x07,
+                                        ])),
+                                        ..Default::default()
+                                    },
+                                },
+                                layout: AbstractPipelineLayout {
+                                    bind_groups: vec![],
+                                    push_constants: vec![],
+                                },
+                            },
                             enable_depth: true,
+                            cull_mode: CullMode::Back,
                             texture: None,
-                            vertex_shader_spv: vec![0x03, 0x02, 0x23, 0x07],
-                            vertex_entry: "vs_main".to_string(),
-                            fragment_shader_spv: vec![0x03, 0x02, 0x23, 0x07],
-                            fragment_entry: "fs_main".to_string(),
                         }),
                         ResourceCreateDescriptor::Texture(TextureDescriptor {
                             width: 1,
@@ -80,7 +112,7 @@ mod tests {
                     updates: vec![
                         ResourceUpdateDescriptor::Mesh {
                             id: mesh_id.expect("mesh id"),
-                            vertex_data: sample_mesh(
+                            vertex_streams: sample_mesh(
                                 [
                                     [0.0, 0.25, 0.0, 1.0, 1.0, 1.0],
                                     [-0.25, -0.25, 0.0, 1.0, 1.0, 1.0],
@@ -88,8 +120,7 @@ mod tests {
                                 ],
                                 vec![0, 1, 2],
                             )
-                            .vertex_data,
-                            vertex_layout: default_vertex_layout(),
+                            .vertex_streams,
                             index_data: vec![0, 0, 1, 0, 2, 0],
                             index_format: IndexFormat::Uint16,
                             index_count: 3,
@@ -123,18 +154,19 @@ mod tests {
         for index in indices {
             index_data.extend_from_slice(index.to_le_bytes().as_slice());
         }
-        MeshDescriptor {
+        MeshDescriptor::single(
             vertex_data,
-            vertex_layout: default_vertex_layout(),
+            default_vertex_layout(),
             index_data,
-            index_format: IndexFormat::Uint16,
+            IndexFormat::Uint16,
             index_count,
-        }
+        )
     }
 
     fn default_vertex_layout() -> VertexBufferLayout {
         VertexBufferLayout {
             array_stride: (6 * std::mem::size_of::<f32>()) as u64,
+            step_mode: rotex_types::resource::VertexStepMode::Vertex,
             attributes: vec![
                 VertexAttribute {
                     format: VertexFormat::Float32x3,

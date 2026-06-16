@@ -59,15 +59,21 @@ fn build_pipeline(
         rotex_types::CullMode::Back => Some(wgpu::Face::Back),
     };
 
+    let vertex_spv = material.shaders.vertex.spirv_bytes().ok_or_else(|| {
+        Error::recoverable(ErrorKind::InvalidDescriptor("vertex_shader_no_spirv"))
+    })?;
+    let fragment_spv = material.shaders.fragment.spirv_bytes().ok_or_else(|| {
+        Error::recoverable(ErrorKind::InvalidDescriptor("fragment_shader_no_spirv"))
+    })?;
     let vertex_shader = create_shader_module_from_spirv(
         &bridge.device.raw,
         "rotex-wgpu-vertex-shader",
-        &material.vertex_shader_spv,
+        vertex_spv,
     )?;
     let fragment_shader = create_shader_module_from_spirv(
         &bridge.device.raw,
         "rotex-wgpu-fragment-shader",
-        &material.fragment_shader_spv,
+        fragment_spv,
     )?;
     let layout = bridge
         .device
@@ -88,7 +94,7 @@ fn build_pipeline(
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &vertex_shader,
-                entry_point: Some(material.vertex_entry.as_str()),
+                entry_point: Some(material.shaders.vertex.entry_point.as_str()),
                 buffers: &[vertex_layout],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
@@ -115,7 +121,7 @@ fn build_pipeline(
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &fragment_shader,
-                entry_point: Some(material.fragment_entry.as_str()),
+                entry_point: Some(material.shaders.fragment.entry_point.as_str()),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: swapchain.config.format,
                     blend: Some(wgpu::BlendState::REPLACE),

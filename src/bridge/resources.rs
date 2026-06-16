@@ -3,6 +3,7 @@ use rotex_types::{
     CreatedResources, MaterialDescriptor, MaterialId, MeshDescriptor, MeshId, ResourceBatchCreate,
     ResourceBatchUpdate, ResourceCreateDescriptor, ResourceHandle, ResourceUpdateDescriptor,
     TextureDescriptor, TextureFormat, TextureId, VertexBufferLayout, VertexFormat,
+    VertexStreamData,
 };
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hasher};
@@ -48,6 +49,7 @@ pub(super) fn create_resources(
                 bridge.resources.textures.insert(id, gpu_texture);
                 handles.push(ResourceHandle::Texture(id));
             }
+            _ => {}
         }
     }
     Ok(CreatedResources { handles })
@@ -61,15 +63,13 @@ pub(super) fn update_resources(
         match update {
             ResourceUpdateDescriptor::Mesh {
                 id,
-                vertex_data,
-                vertex_layout,
+                vertex_streams,
                 index_data,
                 index_format,
                 index_count,
             } => {
                 let mesh = MeshDescriptor {
-                    vertex_data,
-                    vertex_layout,
+                    vertex_streams,
                     index_data,
                     index_format,
                     index_count,
@@ -113,6 +113,7 @@ pub(super) fn update_resources(
                     &data,
                 )?;
             }
+            _ => {}
         }
     }
     Ok(())
@@ -132,11 +133,19 @@ fn create_wgpu_mesh(
             "mesh_missing_index_data",
         )));
     }
-    if mesh.vertex_data.is_empty() {
-        return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-            "mesh_missing_vertex_data",
-        )));
-    }
+
+    let (vertex_data, vertex_layout) = match &mesh.vertex_streams[0].data {
+        VertexStreamData::Static(data) => {
+            if data.is_empty() {
+                return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
+                    "mesh_missing_vertex_data",
+                )));
+            }
+            (data.as_slice(), &mesh.vertex_streams[0].layout)
+        }
+        VertexStreamData::External(_) => (&[][..], &mesh.vertex_streams[0].layout),
+    };
+
     let index_stride = index_format_size(mesh.index_format);
     let expected_index_len = (mesh.index_count as usize)
         .checked_mul(index_stride)
@@ -147,12 +156,12 @@ fn create_wgpu_mesh(
         )));
     }
 
-    let vertex_layout = translate_vertex_layout(mesh)?;
+    let vertex_layout = translate_vertex_layout(vertex_layout)?;
 
     let vertex_buffer = create_buffer(
         device,
         wgpu::BufferUsages::VERTEX,
-        mesh.vertex_data.as_slice(),
+        vertex_data,
         "rotex-wgpu-vertex-buffer",
     );
     let index_buffer = create_buffer(
@@ -167,7 +176,7 @@ fn create_wgpu_mesh(
         index_buffer,
         index_format: map_index_format(mesh.index_format),
         index_count: mesh.index_count,
-        vertex_layout_id: hash_vertex_layout(&mesh.vertex_layout),
+        vertex_layout_id: hash_vertex_layout(&mesh.vertex_streams[0].layout),
         vertex_layout,
     })
 }
@@ -352,17 +361,18 @@ fn write_texture_data_with_staging(
 }
 
 fn validate_material_descriptor(material: &MaterialDescriptor) -> Result<(), Error> {
-    if material.vertex_shader_spv.is_empty() || material.fragment_shader_spv.is_empty() {
-        return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-            "material_shader_bytes_missing",
-        )));
-    }
-    if material.vertex_entry.is_empty() || material.fragment_entry.is_empty() {
+    let vert_spv = material.shaders.vertex.spirv_bytes().ok_or_else(|| {
+        Error::recoverable(ErrorKind::InvalidDescriptor("material_shader_bytes_missing"))
+    })?;
+    let frag_spv = material.shaders.fragment.spirv_bytes().ok_or_else(|| {
+        Error::recoverable(ErrorKind::InvalidDescriptor("material_shader_bytes_missing"))
+    })?;
+    if material.shaders.vertex.entry_point.is_empty() || material.shaders.fragment.entry_point.is_empty() {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "material_shader_entry_missing",
         )));
     }
-    if material.vertex_shader_spv.len() % 4 != 0 || material.fragment_shader_spv.len() % 4 != 0 {
+    if vert_spv.len() % 4 != 0 || frag_spv.len() % 4 != 0 {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "material_shader_bytes_not_word_aligned",
         )));
@@ -370,8 +380,7 @@ fn validate_material_descriptor(material: &MaterialDescriptor) -> Result<(), Err
     Ok(())
 }
 
-fn translate_vertex_layout(mesh: &MeshDescriptor) -> Result<WgpuVertexLayout, Error> {
-    let layout = &mesh.vertex_layout;
+fn translate_vertex_layout(layout: &VertexBufferLayout) -> Result<WgpuVertexLayout, Error> {
     if layout.array_stride == 0 {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "vertex_layout_zero_stride",
@@ -380,11 +389,6 @@ fn translate_vertex_layout(mesh: &MeshDescriptor) -> Result<WgpuVertexLayout, Er
     if layout.attributes.is_empty() {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "vertex_layout_missing_attributes",
-        )));
-    }
-    if mesh.vertex_data.len() % layout.array_stride as usize != 0 {
-        return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
-            "vertex_data_stride_mismatch",
         )));
     }
 
