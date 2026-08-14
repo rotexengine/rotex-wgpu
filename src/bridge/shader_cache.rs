@@ -27,10 +27,13 @@ pub(super) fn get_or_create_shader_module(
 
     let module = match payload {
         ShaderPayload::Wgsl(source) => {
-            bridge.device.raw.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(label),
-                source: wgpu::ShaderSource::Wgsl(source.clone().into()),
-            })
+            bridge
+                .device
+                .raw
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(label),
+                    source: wgpu::ShaderSource::Wgsl(source.clone().into()),
+                })
         }
         ShaderPayload::SpirV(bytes) => {
             if bytes.len() % 4 != 0 {
@@ -38,10 +41,13 @@ pub(super) fn get_or_create_shader_module(
                     "shader_bytes_not_word_aligned",
                 )));
             }
-            bridge.device.raw.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(label),
-                source: wgpu::util::make_spirv(bytes),
-            })
+            bridge
+                .device
+                .raw
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(label),
+                    source: wgpu::util::make_spirv(bytes),
+                })
         }
         _ => {
             return Err(Error::fatal(ErrorKind::Unsupported(

@@ -36,103 +36,116 @@ pub(super) fn create_resources(
                 bridge.resources.materials.insert(id, material);
                 handles.push(ResourceHandle::Material(id));
             }
-                ResourceCreateDescriptor::Texture { id, texture } => {
-                    let id = TextureId(id);
-                    let gpu_texture = create_wgpu_texture(
-                        &bridge.device,
-                        texture,
-                    )?;
-                    bridge.resources.textures.insert(id, gpu_texture);
-                    handles.push(ResourceHandle::Texture(id));
+            ResourceCreateDescriptor::Texture { id, texture } => {
+                let id = TextureId(id);
+                let gpu_texture = create_wgpu_texture(&bridge.device, texture)?;
+                bridge.resources.textures.insert(id, gpu_texture);
+                handles.push(ResourceHandle::Texture(id));
+            }
+            ResourceCreateDescriptor::Buffer { id, buffer: buf } => {
+                let id = BufferId(id);
+                let usage = map_wgpu_buffer_usage(&buf);
+                let size = buf.size.max(1);
+                let buffer = bridge.device.raw.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("rotex-buffer"),
+                    size,
+                    usage,
+                    mapped_at_creation: true,
+                });
+                if let Some(data) = &buf.initial_data {
+                    let len = data.len().min(size as usize);
+                    let mut mapped = buffer.slice(0..len as u64).get_mapped_range_mut();
+                    mapped.copy_from_slice(&data[..len]);
                 }
-                ResourceCreateDescriptor::Buffer { id, buffer: buf } => {
-                    let id = BufferId(id);
-                    let usage = map_wgpu_buffer_usage(&buf);
-                    let size = buf.size.max(1);
-                    let buffer = bridge.device.raw.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("rotex-buffer"),
-                        size,
-                        usage,
-                        mapped_at_creation: true,
-                    });
-                    if let Some(data) = &buf.initial_data {
-                        let len = data.len().min(size as usize);
-                        let mut mapped = buffer.slice(0..len as u64).get_mapped_range_mut();
-                        mapped.copy_from_slice(&data[..len]);
-                    }
-                    buffer.unmap();
-                    bridge.resources.buffers.insert(id, crate::backend::wgpu::WgpuBuffer {
+                buffer.unmap();
+                bridge.resources.buffers.insert(
+                    id,
+                    crate::backend::wgpu::WgpuBuffer {
                         buffer,
                         size: buf.size,
-                    });
-                    handles.push(ResourceHandle::Buffer(id));
-                }
-                ResourceCreateDescriptor::BindGroupLayout { id, layout } => {
-                    let id = BindGroupLayoutId(id);
-                    let wgpu_layout = super::bindings::create_bind_group_layout(
-                        &bridge.device.raw, &layout,
-                    );
-                    bridge.resources.bind_group_layouts.insert(id, wgpu_layout);
-                    handles.push(ResourceHandle::BindGroupLayout(id));
-                }
-                ResourceCreateDescriptor::BindGroup { id, group: bg } => {
-                    let id = BindGroupId(id);
-                    let layout = bridge.resources.bind_group_layouts.get(&bg.layout)
-                        .ok_or(Error::fatal(ErrorKind::Unsupported("bind group layout not found")))?;
-                    let mut entries = Vec::new();
-                    for entry in &bg.entries {
-                        match entry {
-                            BindGroupEntryDescriptor::Buffer { binding, buffer, offset, size } => {
-                                let buf_res = bridge.resources.buffers.get(buffer)
-                                    .ok_or(Error::fatal(ErrorKind::Unsupported("buffer not found")))?;
-                                entries.push(wgpu::BindGroupEntry {
-                                    binding: *binding,
-                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                        buffer: &buf_res.buffer,
-                                        offset: *offset,
-                                        size: if *size == 0 { None } else { Some(std::num::NonZeroU64::new(*size).unwrap()) },
-                                    }),
-                                });
-                            }
-                            BindGroupEntryDescriptor::Texture { binding, texture } => {
-                                let tex_res = bridge
-                                    .resources
-                                    .textures
-                                    .get(texture)
-                                    .ok_or_else(|| {
-                                        Error::fatal(ErrorKind::Unsupported(
-                                            "texture not found for bind group",
-                                        ))
-                                    })?;
-                                entries.push(wgpu::BindGroupEntry {
-                                    binding: *binding,
-                                    resource: wgpu::BindingResource::TextureView(
-                                        &tex_res.default_view,
-                                    ),
-                                });
-                            }
+                    },
+                );
+                handles.push(ResourceHandle::Buffer(id));
+            }
+            ResourceCreateDescriptor::BindGroupLayout { id, layout } => {
+                let id = BindGroupLayoutId(id);
+                let wgpu_layout =
+                    super::bindings::create_bind_group_layout(&bridge.device.raw, &layout);
+                bridge.resources.bind_group_layouts.insert(id, wgpu_layout);
+                handles.push(ResourceHandle::BindGroupLayout(id));
+            }
+            ResourceCreateDescriptor::BindGroup { id, group: bg } => {
+                let id = BindGroupId(id);
+                let layout =
+                    bridge
+                        .resources
+                        .bind_group_layouts
+                        .get(&bg.layout)
+                        .ok_or(Error::fatal(ErrorKind::Unsupported(
+                            "bind group layout not found",
+                        )))?;
+                let mut entries = Vec::new();
+                for entry in &bg.entries {
+                    match entry {
+                        BindGroupEntryDescriptor::Buffer {
+                            binding,
+                            buffer,
+                            offset,
+                            size,
+                        } => {
+                            let buf_res =
+                                bridge.resources.buffers.get(buffer).ok_or(Error::fatal(
+                                    ErrorKind::Unsupported("buffer not found"),
+                                ))?;
+                            entries.push(wgpu::BindGroupEntry {
+                                binding: *binding,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: &buf_res.buffer,
+                                    offset: *offset,
+                                    size: if *size == 0 {
+                                        None
+                                    } else {
+                                        Some(std::num::NonZeroU64::new(*size).unwrap())
+                                    },
+                                }),
+                            });
+                        }
+                        BindGroupEntryDescriptor::Texture { binding, texture } => {
+                            let tex_res =
+                                bridge.resources.textures.get(texture).ok_or_else(|| {
+                                    Error::fatal(ErrorKind::Unsupported(
+                                        "texture not found for bind group",
+                                    ))
+                                })?;
+                            entries.push(wgpu::BindGroupEntry {
+                                binding: *binding,
+                                resource: wgpu::BindingResource::TextureView(&tex_res.default_view),
+                            });
                         }
                     }
-                    let wgpu_bg = bridge.device.raw.create_bind_group(&wgpu::BindGroupDescriptor {
+                }
+                let wgpu_bg = bridge
+                    .device
+                    .raw
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("rotex-bg"),
                         layout,
                         entries: &entries,
                     });
-                    bridge.resources.bind_groups.insert(id, wgpu_bg);
-                    handles.push(ResourceHandle::BindGroup(id));
-                }
-                ResourceCreateDescriptor::ComputePipeline { id, pipeline } => {
-                    let id = ComputePipelineId(id);
-                    let result = super::compute_pipeline_cache::create_compute_pipeline(
-                        bridge, &pipeline,
-                    )?;
-                    bridge.resources.compute_pipelines.insert(id, result);
-                    handles.push(ResourceHandle::ComputePipeline(id));
-                }
+                bridge.resources.bind_groups.insert(id, wgpu_bg);
+                handles.push(ResourceHandle::BindGroup(id));
+            }
+            ResourceCreateDescriptor::ComputePipeline { id, pipeline } => {
+                let id = ComputePipelineId(id);
+                let result =
+                    super::compute_pipeline_cache::create_compute_pipeline(bridge, &pipeline)?;
+                bridge.resources.compute_pipelines.insert(id, result);
+                handles.push(ResourceHandle::ComputePipeline(id));
             }
         }
-        Ok(CreatedResources { handles })
     }
+    Ok(CreatedResources { handles })
+}
 
 pub(super) fn update_resources(
     bridge: &mut WgpuBridge,
@@ -176,7 +189,9 @@ pub(super) fn update_resources(
                     }
                     material.texture = texture_update;
                 }
-                bridge.rhi_pipeline_cache.retain(|key, _| key.material_id != id);
+                bridge
+                    .rhi_pipeline_cache
+                    .retain(|key, _| key.material_id != id);
             }
             ResourceUpdateDescriptor::Texture { id, data } => {
                 let texture =
@@ -366,7 +381,9 @@ fn validate_material_descriptor(material: &MaterialDescriptor) -> Result<(), Err
             "material_shader_source_missing",
         )));
     }
-    if material.shaders.vertex.entry_point.is_empty() || material.shaders.fragment.entry_point.is_empty() {
+    if material.shaders.vertex.entry_point.is_empty()
+        || material.shaders.fragment.entry_point.is_empty()
+    {
         return Err(Error::recoverable(ErrorKind::InvalidDescriptor(
             "material_shader_entry_missing",
         )));
@@ -483,9 +500,6 @@ fn validate_texture_upload(
         },
     })
 }
-
-
-
 
 fn map_wgpu_buffer_usage(desc: &BufferDescriptor) -> wgpu::BufferUsages {
     let usages = desc.effective_usages();

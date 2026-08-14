@@ -1,15 +1,15 @@
 #![allow(dead_code)]
 use crate::error::{Error, ErrorKind};
-use rotex_types::{
-    ColorAttachmentLoad, DepthAttachmentLoad, PassColorTarget, RhiCommand,
-};
+use rotex_types::{ColorAttachmentLoad, DepthAttachmentLoad, PassColorTarget, RhiCommand};
 
 use super::WgpuBridge;
 use super::bindings;
 use super::compute_pipeline_cache;
 use super::shader_cache;
 use super::surface;
-use super::types::{DepthTarget, MaterialPipelineKey, WgpuGraphicsPipelineResource, WgpuVertexLayout};
+use super::types::{
+    DepthTarget, MaterialPipelineKey, WgpuGraphicsPipelineResource, WgpuVertexLayout,
+};
 use rotex_types::resource::MaterialId;
 
 pub struct ActiveGraphicsPass {
@@ -123,7 +123,9 @@ fn rhi_pipeline_for_draw<'a>(
         .get(&key)
         .map(|r| &r.pipeline)
         .ok_or_else(|| {
-            Error::fatal(ErrorKind::PipelineCreationFailed("missing_pipeline_after_insert"))
+            Error::fatal(ErrorKind::PipelineCreationFailed(
+                "missing_pipeline_after_insert",
+            ))
         })
 }
 
@@ -145,11 +147,8 @@ fn rhi_build_pipeline(
         )
     };
 
-    let vertex_shader = shader_cache::get_or_create_shader_module(
-        bridge,
-        "rotex-wgpu-vertex-shader",
-        &vertex_pkg,
-    )?;
+    let vertex_shader =
+        shader_cache::get_or_create_shader_module(bridge, "rotex-wgpu-vertex-shader", &vertex_pkg)?;
     let fragment_shader = shader_cache::get_or_create_shader_module(
         bridge,
         "rotex-wgpu-fragment-shader",
@@ -170,8 +169,7 @@ fn rhi_build_pipeline(
         &bridge.device.raw,
         &material.shaders.layout,
     );
-    let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
-        wgpu_layouts.iter().map(Some).collect();
+    let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> = wgpu_layouts.iter().map(Some).collect();
     let pipeline_layout =
         bridge
             .device
@@ -240,22 +238,20 @@ fn rhi_build_pipeline(
     Ok(pipeline)
 }
 
-pub(super) fn execute(
-    bridge: &mut WgpuBridge,
-    commands: &[RhiCommand],
-) -> Result<(), Error> {
+pub(super) fn execute(bridge: &mut WgpuBridge, commands: &[RhiCommand]) -> Result<(), Error> {
     let mut cmd_iter = commands.iter();
 
     while let Some(command) = cmd_iter.next() {
         match command {
             RhiCommand::BeginFrame { frame_index: _ } => {
                 bridge.current_frame_index += 1;
-                let encoder = bridge
-                    .device
-                    .raw
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("rotex-wgpu-encoder"),
-                    });
+                let encoder =
+                    bridge
+                        .device
+                        .raw
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("rotex-wgpu-encoder"),
+                        });
                 bridge.recording_encoder = Some(encoder);
                 bridge.active_pass = None;
             }
@@ -272,7 +268,11 @@ pub(super) fn execute(
                     bridge.swapchain_format = Some(format);
                 }
             }
-            RhiCommand::WriteBuffer { buffer, offset, data } => {
+            RhiCommand::WriteBuffer {
+                buffer,
+                offset,
+                data,
+            } => {
                 let buf_res = bridge
                     .resources
                     .buffers
@@ -296,7 +296,10 @@ pub(super) fn execute(
                 compute_pipeline_cache::record_compute_dispatch(bridge, &mut encoder, pass)?;
                 bridge.recording_encoder = Some(encoder);
             }
-            RhiCommand::BeginRenderPass { pass, image_index: _ } => {
+            RhiCommand::BeginRenderPass {
+                pass,
+                image_index: _,
+            } => {
                 let mut encoder = bridge.recording_encoder.take().ok_or_else(|| {
                     Error::fatal(ErrorKind::Unsupported(
                         "no command encoder for render pass (call BeginFrame first)",
@@ -307,12 +310,11 @@ pub(super) fn execute(
                 let surface_format;
                 match &pass.color_target {
                     PassColorTarget::Swapchain => {
-                        let surface_texture =
-                            bridge.surface_texture.as_ref().ok_or_else(|| {
-                                Error::fatal(ErrorKind::Unsupported(
-                                    "no surface texture (call AcquireSwapchainImage first)",
-                                ))
-                            })?;
+                        let surface_texture = bridge.surface_texture.as_ref().ok_or_else(|| {
+                            Error::fatal(ErrorKind::Unsupported(
+                                "no surface texture (call AcquireSwapchainImage first)",
+                            ))
+                        })?;
                         color_view = surface_texture
                             .texture
                             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -341,13 +343,9 @@ pub(super) fn execute(
                 let depth_attachment = if pass.uses_depth_attachment() {
                     let depth_view = ensure_depth_target(bridge)?;
                     let depth_load_op = match pass.depth_load {
-                        DepthAttachmentLoad::Clear => {
-                            wgpu::LoadOp::Clear(pass.clear_depth)
-                        }
+                        DepthAttachmentLoad::Clear => wgpu::LoadOp::Clear(pass.clear_depth),
                         DepthAttachmentLoad::Load => wgpu::LoadOp::Load,
-                        DepthAttachmentLoad::None => {
-                            wgpu::LoadOp::Clear(pass.clear_depth)
-                        }
+                        DepthAttachmentLoad::None => wgpu::LoadOp::Clear(pass.clear_depth),
                     };
                     Some(wgpu::RenderPassDepthStencilAttachment {
                         view: depth_view,
@@ -361,23 +359,22 @@ pub(super) fn execute(
                     None
                 };
 
-                let mut render_pass =
-                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some(pass.name.as_str()),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &color_view,
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations {
-                                load: load_color,
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: depth_attachment,
-                        occlusion_query_set: None,
-                        timestamp_writes: None,
-                        multiview_mask: None,
-                    });
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(pass.name.as_str()),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &color_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: load_color,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: depth_attachment,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
 
                 bridge.active_pass = Some(ActiveGraphicsPass {
                     label: pass.name.clone(),
@@ -407,15 +404,14 @@ pub(super) fn execute(
                         None
                     };
                     let device = bridge.device.raw.clone();
-                    let mut bundle_encoder = device.create_render_bundle_encoder(
-                        &wgpu::RenderBundleEncoderDescriptor {
+                    let mut bundle_encoder =
+                        device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
                             label: Some("rotex-wgpu-bundle"),
                             color_formats: &[Some(surface_format)],
                             depth_stencil,
                             sample_count: 1,
                             multiview: None,
-                        },
-                    );
+                        });
 
                     struct DrawOp {
                         pipeline: *const wgpu::RenderPipeline,
@@ -442,19 +438,11 @@ pub(super) fn execute(
                                 let mat_id = *material;
                                 let depth_flag = *depth_enabled;
                                 let (vertex_layout_id, vertex_layout_clone) = {
-                                    let mesh_res = bridge
-                                        .resources
-                                        .meshes
-                                        .get(&mesh_id)
-                                        .ok_or_else(|| {
-                                            Error::recoverable(
-                                                ErrorKind::ResourceNotFound("mesh"),
-                                            )
+                                    let mesh_res =
+                                        bridge.resources.meshes.get(&mesh_id).ok_or_else(|| {
+                                            Error::recoverable(ErrorKind::ResourceNotFound("mesh"))
                                         })?;
-                                    (
-                                        mesh_res.vertex_layout_id,
-                                        mesh_res.vertex_layout.clone(),
-                                    )
+                                    (mesh_res.vertex_layout_id, mesh_res.vertex_layout.clone())
                                 };
                                 let pipeline = rhi_pipeline_for_draw(
                                     bridge,
@@ -482,18 +470,18 @@ pub(super) fn execute(
                                 dynamic_offsets: _,
                             }) => {
                                 for (i, bg_id) in bind_groups.iter().enumerate() {
-                                    let bg = bridge
-                                        .resources
-                                        .bind_groups
-                                        .get(bg_id)
-                                        .ok_or_else(|| {
+                                    let bg = bridge.resources.bind_groups.get(bg_id).ok_or_else(
+                                        || {
                                             Error::fatal(ErrorKind::Unsupported(
                                                 "bind group not found",
                                             ))
-                                        })?;
+                                        },
+                                    )?;
                                     if let Some(op) = ops.last_mut() {
-                                        op.bind_groups
-                                            .push((*first_set + i as u32, bg as *const wgpu::BindGroup));
+                                        op.bind_groups.push((
+                                            *first_set + i as u32,
+                                            bg as *const wgpu::BindGroup,
+                                        ));
                                     }
                                 }
                             }
@@ -502,14 +490,9 @@ pub(super) fn execute(
                                 first_binding: _,
                             }) => {
                                 let mesh_id = *mesh;
-                                let mesh_res = bridge
-                                    .resources
-                                    .meshes
-                                    .get(&mesh_id)
-                                    .ok_or_else(|| {
-                                        Error::recoverable(
-                                            ErrorKind::ResourceNotFound("mesh"),
-                                        )
+                                let mesh_res =
+                                    bridge.resources.meshes.get(&mesh_id).ok_or_else(|| {
+                                        Error::recoverable(ErrorKind::ResourceNotFound("mesh"))
                                     })?;
                                 if let Some(op) = ops.last_mut() {
                                     op.vertex_buffer =
@@ -518,18 +501,12 @@ pub(super) fn execute(
                             }
                             Some(RhiCommand::SetIndexBuffer { mesh }) => {
                                 let mesh_id = *mesh;
-                                let mesh_res = bridge
-                                    .resources
-                                    .meshes
-                                    .get(&mesh_id)
-                                    .ok_or_else(|| {
-                                        Error::recoverable(
-                                            ErrorKind::ResourceNotFound("mesh"),
-                                        )
+                                let mesh_res =
+                                    bridge.resources.meshes.get(&mesh_id).ok_or_else(|| {
+                                        Error::recoverable(ErrorKind::ResourceNotFound("mesh"))
                                     })?;
                                 if let Some(op) = ops.last_mut() {
-                                    op.index_buffer =
-                                        &mesh_res.index_buffer as *const wgpu::Buffer;
+                                    op.index_buffer = &mesh_res.index_buffer as *const wgpu::Buffer;
                                     op.index_format = mesh_res.index_format;
                                 }
                             }

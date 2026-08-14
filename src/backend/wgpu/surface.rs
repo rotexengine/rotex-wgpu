@@ -21,9 +21,10 @@ impl WgpuSurface {
         height: u32,
     ) -> Result<WgpuSwapchain, Error> {
         let caps = self.raw.get_capabilities(&device.adapter);
-        let format = *caps.formats.first().ok_or_else(|| {
-            Error::fatal(ErrorKind::NoCompatibleDevice)
-        })?;
+        let format = *caps
+            .formats
+            .first()
+            .ok_or_else(|| Error::fatal(ErrorKind::NoCompatibleDevice))?;
         let view_formats = if format.is_srgb() {
             let linear = match format {
                 wgpu::TextureFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8Unorm,

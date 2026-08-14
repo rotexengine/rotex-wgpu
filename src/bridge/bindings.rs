@@ -71,7 +71,9 @@ pub fn map_binding_type(ty: BindingType, readonly: bool) -> wgpu::BindingType {
             }
         }
         BindingType::StorageBuffer => wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: readonly },
+            ty: wgpu::BufferBindingType::Storage {
+                read_only: readonly,
+            },
             has_dynamic_offset: false,
             min_binding_size: None,
         },

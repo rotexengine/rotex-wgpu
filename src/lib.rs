@@ -39,62 +39,71 @@ mod tests {
             let resources = bridge
                 .create_resources(ResourceBatchCreate {
                     resources: vec![
-                        ResourceCreateDescriptor::Mesh { id: 1, mesh: sample_mesh(
-                            [
-                                [0.0, 0.5, 0.0, 1.0, 0.0, 0.0],
-                                [-0.5, -0.5, 0.0, 0.0, 1.0, 0.0],
-                                [0.5, -0.5, 0.0, 0.0, 0.0, 1.0],
-                            ],
-                            vec![0, 1, 2],
-                        ) },
-                        ResourceCreateDescriptor::Material { id: 2, material: MaterialDescriptor {
-                            shaders: GraphicsShaderPackage {
-                                vertex: ShaderPackage {
-                                    source_hash: 0,
-                                    stage: ShaderStage::Vertex,
-                                    entry_point: "vs_main".to_string(),
+                        ResourceCreateDescriptor::Mesh {
+                            id: 1,
+                            mesh: sample_mesh(
+                                [
+                                    [0.0, 0.5, 0.0, 1.0, 0.0, 0.0],
+                                    [-0.5, -0.5, 0.0, 0.0, 1.0, 0.0],
+                                    [0.5, -0.5, 0.0, 0.0, 0.0, 1.0],
+                                ],
+                                vec![0, 1, 2],
+                            ),
+                        },
+                        ResourceCreateDescriptor::Material {
+                            id: 2,
+                            material: MaterialDescriptor {
+                                shaders: GraphicsShaderPackage {
+                                    vertex: ShaderPackage {
+                                        source_hash: 0,
+                                        stage: ShaderStage::Vertex,
+                                        entry_point: "vs_main".to_string(),
+                                        layout: AbstractPipelineLayout {
+                                            bind_groups: vec![],
+                                            push_constants: vec![],
+                                        },
+                                        variants: ShaderVariantMap {
+                                            spirv: Some(ShaderPayload::SpirV(vec![
+                                                0x03, 0x02, 0x23, 0x07,
+                                            ])),
+                                            ..Default::default()
+                                        },
+                                    },
+                                    fragment: ShaderPackage {
+                                        source_hash: 0,
+                                        stage: ShaderStage::Fragment,
+                                        entry_point: "fs_main".to_string(),
+                                        layout: AbstractPipelineLayout {
+                                            bind_groups: vec![],
+                                            push_constants: vec![],
+                                        },
+                                        variants: ShaderVariantMap {
+                                            spirv: Some(ShaderPayload::SpirV(vec![
+                                                0x03, 0x02, 0x23, 0x07,
+                                            ])),
+                                            ..Default::default()
+                                        },
+                                    },
                                     layout: AbstractPipelineLayout {
                                         bind_groups: vec![],
                                         push_constants: vec![],
                                     },
-                                    variants: ShaderVariantMap {
-                                        spirv: Some(ShaderPayload::SpirV(vec![
-                                            0x03, 0x02, 0x23, 0x07,
-                                        ])),
-                                        ..Default::default()
-                                    },
                                 },
-                                fragment: ShaderPackage {
-                                    source_hash: 0,
-                                    stage: ShaderStage::Fragment,
-                                    entry_point: "fs_main".to_string(),
-                                    layout: AbstractPipelineLayout {
-                                        bind_groups: vec![],
-                                        push_constants: vec![],
-                                    },
-                                    variants: ShaderVariantMap {
-                                        spirv: Some(ShaderPayload::SpirV(vec![
-                                            0x03, 0x02, 0x23, 0x07,
-                                        ])),
-                                        ..Default::default()
-                                    },
-                                },
-                                layout: AbstractPipelineLayout {
-                                    bind_groups: vec![],
-                                    push_constants: vec![],
-                                },
+                                enable_depth: true,
+                                cull_mode: CullMode::Back,
+                                texture: None,
                             },
-                            enable_depth: true,
-                            cull_mode: CullMode::Back,
-                            texture: None,
-                        } },
-                        ResourceCreateDescriptor::Texture { id: 3, texture: TextureDescriptor {
-                            width: 1,
-                            height: 1,
-                            format: TextureFormat::Rgba8Unorm,
-                            data: vec![255, 255, 255, 255],
-                            render_attachment: false,
-                        } },
+                        },
+                        ResourceCreateDescriptor::Texture {
+                            id: 3,
+                            texture: TextureDescriptor {
+                                width: 1,
+                                height: 1,
+                                format: TextureFormat::Rgba8Unorm,
+                                data: vec![255, 255, 255, 255],
+                                render_attachment: false,
+                            },
+                        },
                     ],
                 })
                 .expect("resource creation should succeed");

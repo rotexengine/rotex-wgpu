@@ -16,9 +16,9 @@ use rotex_core::{
     Error as CoreError, ErrorKind as CoreErrorKind, GpuBackend, Severity as CoreSeverity,
 };
 use rotex_types::{
-    BufferId, ComputePipelineId, CreatedResources, DeviceDescriptor, Extent2D,
-    InstanceDescriptor, ResourceBatchCreate, ResourceBatchUpdate, RhiCommand,
-    SurfaceDescriptor, TextureId, TextureReadback,
+    BufferId, ComputePipelineId, CreatedResources, DeviceDescriptor, Extent2D, InstanceDescriptor,
+    ResourceBatchCreate, ResourceBatchUpdate, RhiCommand, SurfaceDescriptor, TextureId,
+    TextureReadback,
 };
 
 use self::shader_cache::ShaderCacheKey;
@@ -31,7 +31,8 @@ pub struct WgpuBridge {
     pub(crate) swapchain: Option<WgpuSwapchain>,
     pub(crate) resources: ResourceStorage,
     pub(crate) depth_target: Option<DepthTarget>,
-    pub(crate) rhi_pipeline_cache: HashMap<MaterialPipelineKey, types::WgpuGraphicsPipelineResource>,
+    pub(crate) rhi_pipeline_cache:
+        HashMap<MaterialPipelineKey, types::WgpuGraphicsPipelineResource>,
     pub(crate) shader_module_cache: HashMap<ShaderCacheKey, wgpu::ShaderModule>,
     pub(crate) compute_bind_groups:
         HashMap<(ComputePipelineId, BufferId), Vec<(u32, wgpu::BindGroup)>>,
